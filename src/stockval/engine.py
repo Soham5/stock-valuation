@@ -18,9 +18,13 @@ from .config import (
     EQUITY_RISK_PREMIUM_BY_CURRENCY,
     RISK_FREE_BY_CURRENCY,
 )
+from .logging_config import get_logger
 from .models import CompanyData, ValuationResult
 from .utils import mean
+from .validation import DataQualityReport, validate_company
 from .valuation import capm, comparables, dcf, ddm, multiples
+
+_log = get_logger("engine")
 
 
 @dataclass
@@ -48,6 +52,7 @@ class ValuationSummary:
     wacc: capm.WaccResult
     cost_of_equity: float
     results: list[ValuationResult] = field(default_factory=list)
+    data_quality: Optional[DataQualityReport] = None
 
     @property
     def current_price(self) -> Optional[float]:
@@ -113,6 +118,27 @@ def run_valuation(
     peers: Optional[Sequence[CompanyData]] = None,
 ) -> ValuationSummary:
     """Run every applicable model and consolidate the results."""
+    # Validate inputs first so corrupted data is surfaced, not silently valued.
+    quality = validate_company(company)
+    if quality.errors:
+        _log.warning(
+            "Valuing %s despite data-quality errors: %s",
+            company.market.ticker,
+            "; ".join(str(i) for i in quality.errors),
+        )
+    _log.info(
+        "run_valuation %s | beta=%.2f g=%.3f tg=%.3f rf=%.3f erp=%.3f tax=%.3f years=%d | %s",
+        company.market.ticker,
+        assumptions.beta,
+        assumptions.growth_rate,
+        assumptions.terminal_growth,
+        assumptions.risk_free_rate,
+        assumptions.equity_risk_premium,
+        assumptions.tax_rate,
+        assumptions.forecast_years,
+        quality.summary,
+    )
+
     equity_value = company.market.equity_value or 0.0
     debt_value = company.financials.total_debt or 0.0
 
@@ -181,4 +207,5 @@ def run_valuation(
         wacc=wacc_res,
         cost_of_equity=ke,
         results=results,
+        data_quality=quality,
     )

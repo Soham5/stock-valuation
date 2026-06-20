@@ -15,7 +15,7 @@ from typing import Optional, Sequence
 
 from ..config import DEFAULT_FORECAST_YEARS, DEFAULT_TERMINAL_GROWTH
 from ..models import CompanyData, ValuationResult
-from ..utils import gordon_terminal_value, present_value, safe_div
+from ..utils import gordon_terminal_value, mean, present_value, safe_div
 
 
 def project_cash_flows(
@@ -28,6 +28,31 @@ def project_cash_flows(
     cf = base_cash_flow
     for _ in range(years):
         cf = cf * (1.0 + growth_rate)
+        flows.append(cf)
+    return flows
+
+
+def project_faded_cash_flows(
+    base_cash_flow: float,
+    start_growth: float,
+    end_growth: float,
+    years: int,
+) -> list[float]:
+    """Grow ``base_cash_flow`` with growth linearly fading start -> end.
+
+    This is the multi-stage refinement of :func:`project_cash_flows`: rather
+    than holding a single growth rate flat across the horizon (which tends to
+    over- or under-value high-growth firms), the rate glides from an initial
+    ``start_growth`` toward a mature ``end_growth`` over ``years`` periods.
+    """
+    flows: list[float] = []
+    cf = base_cash_flow
+    for i in range(years):
+        if years == 1:
+            g = end_growth
+        else:
+            g = start_growth + (end_growth - start_growth) * (i / (years - 1))
+        cf = cf * (1.0 + g)
         flows.append(cf)
     return flows
 
@@ -79,8 +104,15 @@ def fcff_dcf(
     tax_rate: float,
     terminal_growth: float = DEFAULT_TERMINAL_GROWTH,
     years: int = DEFAULT_FORECAST_YEARS,
+    fade_to_terminal: bool = False,
 ) -> ValuationResult:
-    """Enterprise DCF on Free Cash Flow to the Firm."""
+    """Enterprise DCF on Free Cash Flow to the Firm.
+
+    When ``fade_to_terminal`` is set, the explicit-phase growth glides from
+    ``growth_rate`` down to ``terminal_growth`` (a two-stage model) instead of
+    being held flat, avoiding the over-valuation that constant high growth
+    into perpetuity produces.
+    """
     base_fcff = compute_fcff(company, tax_rate)
     shares = company.market.shares_outstanding
     if base_fcff is None or not shares:
@@ -90,7 +122,10 @@ def fcff_dcf(
             assumptions={"reason": "insufficient data (FCFF or shares missing)"},
         )
 
-    flows = project_cash_flows(base_fcff, growth_rate, years)
+    if fade_to_terminal:
+        flows = project_faded_cash_flows(base_fcff, growth_rate, terminal_growth, years)
+    else:
+        flows = project_cash_flows(base_fcff, growth_rate, years)
     disc = discount_cash_flows(flows, wacc, terminal_growth)
     enterprise_value = disc["total"]
     net_debt = company.financials.net_debt or 0.0
@@ -108,6 +143,7 @@ def fcff_dcf(
             "terminal_growth": terminal_growth,
             "years": years,
             "tax_rate": tax_rate,
+            "fade_to_terminal": fade_to_terminal,
         },
         detail={
             "base_fcff": base_fcff,
@@ -118,18 +154,40 @@ def fcff_dcf(
     )
 
 
-def compute_fcfe(company: CompanyData, tax_rate: float) -> Optional[float]:
+def estimate_net_borrowing(company: CompanyData) -> float:
+    """Estimate steady-state net borrowing from total-debt history.
+
+    Net borrowing (debt issued minus repaid) is unobservable from a single
+    snapshot.  Where a multi-year debt history exists we use the average
+    annual change in total debt as a grounded proxy; otherwise we fall back
+    to zero (the conventional steady-state assumption).
+    """
+    debt = [d for d in company.historical_total_debt if d is not None]
+    if len(debt) >= 2:
+        diffs = [debt[i] - debt[i - 1] for i in range(1, len(debt))]
+        avg = mean(diffs)
+        return avg if avg is not None else 0.0
+    return 0.0
+
+
+def compute_fcfe(
+    company: CompanyData,
+    tax_rate: float,
+    net_borrowing: Optional[float] = None,
+) -> Optional[float]:
     """Latest-year FCFE derived from FCFF, interest and net borrowing.
 
-    Net borrowing is unobservable from a single snapshot, so it is assumed
-    zero (a common simplifying assumption for steady-state firms).
+    When ``net_borrowing`` is not supplied it is estimated from the company's
+    total-debt history via :func:`estimate_net_borrowing` rather than being
+    silently assumed to be zero.
     """
     fcff = compute_fcff(company, tax_rate)
     if fcff is None:
         return None
     interest = company.financials.interest_expense or 0.0
     after_tax_interest = interest * (1.0 - tax_rate)
-    net_borrowing = 0.0
+    if net_borrowing is None:
+        net_borrowing = estimate_net_borrowing(company)
     return fcff - after_tax_interest + net_borrowing
 
 

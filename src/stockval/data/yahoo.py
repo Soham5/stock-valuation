@@ -7,10 +7,15 @@ rest of the codebase never imports yfinance.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from ..config import INDIA_EXCHANGE_SUFFIXES, INDIA_SECTOR_PEERS
-from ..models import CompanyData, Financials, MarketData
+from ..logging_config import get_logger
+from ..models import CompanyData, DataProvenance, Financials, MarketData
+from ..validation import validate_company
+
+_log = get_logger("data.yahoo")
 
 
 class DataUnavailableError(RuntimeError):
@@ -59,6 +64,34 @@ def _history(stmt, *candidates) -> list[float]:
     return []
 
 
+def _quarterly_history(stmt, *candidates) -> tuple[list[float], list[int]]:
+    """Oldest-first quarterly values with aligned calendar-quarter labels.
+
+    Returns ``(values, quarters)`` where ``quarters`` holds the calendar
+    quarter (1-4) derived from each column's period-end date.  Used for
+    statistically sound seasonality detection.
+    """
+    if stmt is None or getattr(stmt, "empty", True):
+        return [], []
+    for name in candidates:
+        if name in stmt.index:
+            series = stmt.loc[name].dropna()
+            if series.empty:
+                continue
+            values: list[float] = []
+            quarters: list[int] = []
+            # Columns are most-recent-first; reverse to oldest-first.
+            for period, value in reversed(list(series.items())):
+                try:
+                    values.append(float(value))
+                except (TypeError, ValueError):
+                    continue
+                month = getattr(period, "month", None)
+                quarters.append((month - 1) // 3 + 1 if month else len(quarters) % 4 + 1)
+            return values, quarters
+    return [], []
+
+
 def resolve_ticker(ticker: str) -> str:
     """Normalise a user-entered symbol, auto-resolving Indian listings.
 
@@ -87,7 +120,11 @@ def _has_price(ticker: str) -> bool:
         return False
     try:
         info = yf.Ticker(ticker).get_info()
-    except Exception:  # noqa: BLE001
+    except (ValueError, KeyError, ConnectionError, TimeoutError) as exc:
+        _log.debug("Price probe failed for %s: %s", ticker, exc)
+        return False
+    except Exception as exc:  # noqa: BLE001 - yfinance raises many ad-hoc errors
+        _log.warning("Unexpected error probing price for %s: %s", ticker, exc)
         return False
     if not info:
         return False
@@ -114,7 +151,8 @@ def fetch_company(ticker: str) -> CompanyData:
     info = {}
     try:
         info = tk.get_info()
-    except Exception:  # noqa: BLE001 - yfinance raises many ad-hoc errors
+    except Exception as exc:  # noqa: BLE001 - yfinance raises many ad-hoc errors
+        _log.warning("get_info failed for %s, falling back to .info: %s", ticker, exc)
         info = getattr(tk, "info", {}) or {}
 
     if not info:
@@ -123,6 +161,7 @@ def fetch_company(ticker: str) -> CompanyData:
     income = _statement(tk, "income_stmt", "financials")
     balance = _statement(tk, "balance_sheet")
     cashflow = _statement(tk, "cashflow", "cash_flow")
+    quarterly_income = _statement(tk, "quarterly_income_stmt", "quarterly_financials")
 
     price = _safe_get(info, "currentPrice") or _safe_get(info, "regularMarketPrice")
     shares = _safe_get(info, "sharesOutstanding")
@@ -173,13 +212,44 @@ def fetch_company(ticker: str) -> CompanyData:
         book_value_per_share=book_value_ps,
     )
 
-    return CompanyData(
+    quarterly_rev, quarterly_periods = _quarterly_history(
+        quarterly_income, "Total Revenue", "Revenue"
+    )
+
+    company = CompanyData(
         market=market,
         financials=financials,
         historical_revenue=_history(income, "Total Revenue", "Revenue"),
         historical_fcf=_history(cashflow, "Free Cash Flow"),
         historical_dividends=[],
+        historical_total_debt=_history(balance, "Total Debt", "Long Term Debt"),
+        quarterly_revenue=quarterly_rev,
+        quarterly_revenue_periods=quarterly_periods,
+        provenance=DataProvenance(
+            source="yahoo-finance/yfinance",
+            ticker=ticker.upper(),
+            retrieved_at=datetime.now(timezone.utc).isoformat(),
+            notes="Assembled from yfinance info + annual/quarterly statements.",
+        ),
     )
+
+    # Data-quality tripwire: attach findings and log any blocking errors so
+    # corrupted inputs never silently flow into a valuation.
+    report = validate_company(company)
+    company.quality_issues = report.issues
+    if report.errors:
+        _log.warning(
+            "Data-quality issues for %s: %s",
+            ticker.upper(),
+            "; ".join(str(i) for i in report.errors),
+        )
+    _log.info(
+        "Fetched %s (%s); %s",
+        ticker.upper(),
+        market.currency,
+        report.summary,
+    )
+    return company
 
 
 def _statement(tk, *attrs):
@@ -187,7 +257,8 @@ def _statement(tk, *attrs):
     for attr in attrs:
         try:
             stmt = getattr(tk, attr)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - yfinance attributes are fragile
+            _log.debug("Statement '%s' unavailable: %s", attr, exc)
             continue
         if stmt is not None and not getattr(stmt, "empty", True):
             return stmt
@@ -243,7 +314,8 @@ def discover_peer_tickers(company: CompanyData, max_peers: int = 6) -> list[str]
     def _collect(domain) -> None:
         try:
             table = domain.top_companies
-        except Exception:  # noqa: BLE001 - yfinance domain calls are fragile
+        except Exception as exc:  # noqa: BLE001 - yfinance domain calls are fragile
+            _log.debug("Peer discovery via %r failed: %s", domain, exc)
             return
         if table is None or getattr(table, "empty", True):
             return

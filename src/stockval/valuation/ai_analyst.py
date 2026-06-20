@@ -54,14 +54,22 @@ class AnalystThesis:
     analyst_notes: str  # Institutional perspective with experience-based insights
 
 
+@dataclass
+class SwotAnalysis:
+    """Classic SWOT framework derived from fundamentals and trend signals."""
+
+    strengths: list[str]
+    weaknesses: list[str]
+    opportunities: list[str]
+    threats: list[str]
+
+
 class AIAnalyst:
-    """20+ years of institutional investment banking expertise in code."""
-    
+    """20+ years of institutional investment banking expertise in code."""    
     def __init__(self, company: CompanyData):
         self.company = company
         self.financials = company.financials
         self.market = company.market
-        
     def analyze_growth_trajectory(self) -> dict:
         """Analyze historical growth patterns and project forward."""
         if not self.company.historical_revenue or len(self.company.historical_revenue) < 2:
@@ -96,44 +104,173 @@ class AIAnalyst:
         }
     
     def detect_seasonality(self) -> SeasonalPattern:
-        """Detect seasonal patterns in quarterly/annual patterns."""
-        if not self.company.historical_revenue or len(self.company.historical_revenue) < 4:
+        """Detect seasonality from quarterly revenue using seasonal indices.
+
+        Seasonality is an *intra-year* phenomenon and cannot be inferred from
+        annual figures.  This requires at least eight quarters of revenue and
+        computes a seasonal index per calendar quarter (mean quarter revenue /
+        overall mean).  Quarters whose index runs materially above or below 1.0
+        are flagged as peaks / troughs, and the dispersion of those indices is
+        the seasonality strength.
+        """
+        quarterly = self.company.quarterly_revenue
+        periods = self.company.quarterly_revenue_periods
+
+        if not quarterly or len(quarterly) < 8:
             return SeasonalPattern(
                 is_seasonal=False,
                 seasonality_strength=0.0,
                 peak_quarters=[],
                 trough_quarters=[],
-                reasoning="Insufficient historical data (need 4+ years)"
+                reasoning=(
+                    "Insufficient quarterly data (need 8+ quarters) for reliable "
+                    "seasonality detection; annual figures cannot reveal intra-year "
+                    "seasonality."
+                ),
             )
-        
-        revenue = self.company.historical_revenue
-        
-        # Calculate coefficient of variation as proxy for seasonality
-        mean_rev = sum(revenue) / len(revenue)
-        if mean_rev == 0:
-            cv = 0
+
+        # Align each value to a calendar quarter (1-4). Fall back to positional
+        # quarters when explicit labels are unavailable.
+        if periods and len(periods) == len(quarterly):
+            labels = periods
         else:
-            variance = sum((r - mean_rev) ** 2 for r in revenue) / len(revenue)
-            cv = (variance ** 0.5) / mean_rev  # Coefficient of variation
-        
-        is_seasonal = cv > 0.15  # Threshold for meaningful seasonality
-        
-        # Identify patterns (simplified without actual quarterly data)
-        peak_quarters = self._infer_peak_quarters()
-        trough_quarters = self._infer_trough_quarters()
-        
+            labels = [(i % 4) + 1 for i in range(len(quarterly))]
+
+        overall_mean = sum(quarterly) / len(quarterly)
+        if overall_mean <= 0:
+            return SeasonalPattern(
+                is_seasonal=False,
+                seasonality_strength=0.0,
+                peak_quarters=[],
+                trough_quarters=[],
+                reasoning="Non-positive average revenue; seasonality undefined.",
+            )
+
+        # Mean revenue per calendar quarter, then its seasonal index.
+        buckets: dict[int, list[float]] = {}
+        for q, value in zip(labels, quarterly):
+            buckets.setdefault(q, []).append(value)
+        indices = {
+            q: (sum(vals) / len(vals)) / overall_mean for q, vals in buckets.items()
+        }
+
+        peak_quarters = sorted(q for q, idx in indices.items() if idx >= 1.05)
+        trough_quarters = sorted(q for q, idx in indices.items() if idx <= 0.95)
+
+        # Strength = dispersion (coefficient of variation) of the seasonal indices.
+        idx_values = list(indices.values())
+        idx_mean = sum(idx_values) / len(idx_values)
+        variance = sum((v - idx_mean) ** 2 for v in idx_values) / len(idx_values)
+        strength = (variance ** 0.5) / idx_mean if idx_mean else 0.0
+        is_seasonal = strength > 0.10 or bool(peak_quarters and trough_quarters)
+
         reasoning = (
-            f"Analyzed {len(revenue)} years of historical revenue. "
-            f"Coefficient of variation: {cv:.2%}. "
-            f"{'Pronounced seasonal patterns detected in typical industry cycles.' if is_seasonal else 'Relatively steady business with minimal seasonal volatility.'}"
+            f"Analysed {len(quarterly)} quarters of revenue across "
+            f"{len(buckets)} calendar quarters. Seasonal-index dispersion: "
+            f"{strength:.1%}. "
+            + (
+                "Statistically meaningful seasonality detected."
+                if is_seasonal
+                else "No material intra-year seasonality detected."
+            )
         )
-        
+
         return SeasonalPattern(
             is_seasonal=is_seasonal,
-            seasonality_strength=cv,
+            seasonality_strength=strength,
             peak_quarters=peak_quarters,
             trough_quarters=trough_quarters,
-            reasoning=reasoning
+            reasoning=reasoning,
+        )
+    
+    def generate_swot(self) -> SwotAnalysis:
+        """Build a SWOT from fundamentals, growth signals and trend context."""
+        fin = self.financials
+        mkt = self.market
+        growth = self.analyze_growth_trajectory()
+        trend = self.identify_trend()
+
+        strengths: list[str] = []
+        weaknesses: list[str] = []
+        opportunities: list[str] = []
+        threats: list[str] = []
+
+        # --- Margin & profitability -----------------------------------
+        if fin.revenue and fin.net_income is not None and fin.revenue > 0:
+            net_margin = fin.net_income / fin.revenue
+            if net_margin > 0.15:
+                strengths.append(f"High net margin ({net_margin:.1%}) signals strong pricing power")
+            elif net_margin < 0.05:
+                weaknesses.append(f"Thin net margin ({net_margin:.1%}) limits earnings resilience")
+
+        if fin.revenue and fin.ebit is not None and fin.revenue > 0:
+            op_margin = fin.ebit / fin.revenue
+            if op_margin > 0.20:
+                strengths.append(f"Robust operating margin ({op_margin:.1%}) reflects operational efficiency")
+            elif op_margin < 0.08:
+                weaknesses.append(f"Low operating margin ({op_margin:.1%}) pressures profitability")
+
+        # --- Balance sheet --------------------------------------------
+        net_debt = fin.net_debt
+        if net_debt is not None:
+            if net_debt < 0:
+                strengths.append("Net cash position provides balance-sheet flexibility")
+            elif fin.ebitda and fin.ebitda > 0 and (net_debt / fin.ebitda) > 3:
+                weaknesses.append(f"Elevated leverage (Net debt/EBITDA {net_debt / fin.ebitda:.1f}x)")
+
+        # --- Cash generation ------------------------------------------
+        if fin.free_cash_flow is not None:
+            if fin.free_cash_flow > 0:
+                strengths.append("Positive free cash flow supports reinvestment and returns")
+            else:
+                weaknesses.append("Negative free cash flow constrains capital allocation")
+
+        # --- Growth ----------------------------------------------------
+        if growth.get("status") != "insufficient_data":
+            cagr = growth.get("historical_cagr", 0)
+            if cagr > 0.10:
+                strengths.append(f"Strong revenue CAGR ({cagr:.1%}) over the analysed period")
+            if growth.get("momentum") == "accelerating":
+                opportunities.append("Accelerating growth momentum can drive multiple re-rating")
+            elif growth.get("momentum") == "decelerating":
+                threats.append("Decelerating growth may compress valuation multiples")
+
+        # --- Dividend / shareholder returns ---------------------------
+        if mkt.dividend_per_share:
+            opportunities.append("Dividend stream broadens the total-return profile")
+
+        # --- Trend-driven opportunities & threats ---------------------
+        for driver in trend.key_drivers[:2]:
+            opportunities.append(driver)
+
+        if trend.trend_type == "CYCLICAL":
+            threats.append("Earnings sensitivity to the economic cycle")
+        elif trend.trend_type == "DECLINING":
+            threats.append("Structural headwinds weighing on the demand outlook")
+
+        # --- Valuation context ----------------------------------------
+        if mkt.price and fin.eps and fin.eps > 0:
+            pe = mkt.price / fin.eps
+            if pe > 35:
+                threats.append(f"Premium valuation (P/E {pe:.1f}x) leaves little margin for error")
+            elif pe < 12:
+                opportunities.append(f"Undemanding valuation (P/E {pe:.1f}x) offers re-rating potential")
+
+        # --- Sensible fallbacks ---------------------------------------
+        if not strengths:
+            strengths.append("Established operations within its sector")
+        if not weaknesses:
+            weaknesses.append("Limited disclosure constrains deeper diligence")
+        if not opportunities:
+            opportunities.append("Operational improvements and market expansion")
+        if not threats:
+            threats.append("Competitive intensity and macroeconomic uncertainty")
+
+        return SwotAnalysis(
+            strengths=strengths,
+            weaknesses=weaknesses,
+            opportunities=opportunities,
+            threats=threats,
         )
     
     def identify_trend(self) -> TrendAnalysis:

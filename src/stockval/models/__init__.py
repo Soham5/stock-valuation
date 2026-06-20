@@ -8,7 +8,22 @@ without any network access.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
+
+
+@dataclass(frozen=True)
+class DataProvenance:
+    """Lineage metadata for an assembled snapshot (audit trail).
+
+    Records *where* the data came from and *when* it was retrieved so a
+    valuation can be reproduced and traced — a baseline requirement for
+    auditable, point-in-time-aware analysis.
+    """
+
+    source: str
+    ticker: str
+    retrieved_at: str  # ISO-8601 UTC timestamp
+    notes: str = ""
 
 
 @dataclass(frozen=True)
@@ -80,6 +95,15 @@ class CompanyData:
     historical_revenue: list[float] = field(default_factory=list)
     historical_fcf: list[float] = field(default_factory=list)
     historical_dividends: list[float] = field(default_factory=list)
+    # Oldest-first total-debt history, used to model net borrowing in FCFE.
+    historical_total_debt: list[float] = field(default_factory=list)
+    # Oldest-first quarterly revenue with aligned calendar-quarter labels
+    # (1-4), used for statistically sound seasonality detection.
+    quarterly_revenue: list[float] = field(default_factory=list)
+    quarterly_revenue_periods: list[int] = field(default_factory=list)
+    # Lineage and data-quality findings attached at assembly/validation time.
+    provenance: Optional[DataProvenance] = None
+    quality_issues: list[Any] = field(default_factory=list)
 
     @property
     def ticker(self) -> str:
