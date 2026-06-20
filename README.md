@@ -22,6 +22,25 @@ analysis.
 | **Multiples** | `valuation/multiples.py` | P/E, EV/EBITDA, P/B implied prices |
 | **Comparables** | `valuation/comparables.py` | Peer-median multiples benchmarking |
 | **Sensitivity / Scenarios** | `valuation/sensitivity.py` | WACC × g heat-map, Bear/Base/Bull |
+| **🤖 AI Analyst** | `valuation/ai_analyst.py` | Institutional equity research with trend, seasonal & growth analysis |
+
+### AI Analyst Features (20+ Years Institutional Expertise)
+
+The **AI Analyst** tab provides deep institutional-grade analysis:
+
+- **Growth Trajectory Analysis**: Historical CAGR, recent growth rates, momentum analysis (accelerating/decelerating), and growth quality assessment
+- **Seasonal Pattern Detection**: Identifies seasonal revenue patterns in business models with coefficient-of-variation analysis and typical peak/trough quarters by sector
+- **Market Trend Classification**: Categorizes stocks as GROWTH, MOMENTUM, VALUE, CYCLICAL, or DECLINING with confidence levels based on growth metrics and valuations
+- **Investment Thesis Generation**: Creates comprehensive analyst-style theses including:
+  - Executive summary with institutional perspective
+  - Bull and bear cases with supporting rationale
+  - Key catalysts and risks
+  - Valuation assessment and growth outlook
+  - Competitive positioning analysis
+  - Analyst conviction levels
+- **Sector-Aware Analysis**: Customized seasonal patterns and trend drivers by industry (Technology, Retail, Manufacturing, Agriculture, Consumer, etc.)
+
+
 
 > **Automatic peer discovery:** just enter a ticker — peers are found
 > automatically from the company's Yahoo *industry* (then *sector* as a
@@ -49,7 +68,8 @@ src/stockval/
 │   └── yahoo.py            The ONLY place that touches the network (yfinance)
 └── valuation/
     ├── capm.py  dcf.py  ddm.py
-    └── multiples.py  comparables.py  sensitivity.py
+    ├── multiples.py  comparables.py  sensitivity.py
+    └── ai_analyst.py       AI-powered institutional equity analysis
 tests/                      Offline unit tests (no network needed)
 ```
 
