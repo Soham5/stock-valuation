@@ -30,7 +30,7 @@ from stockval.data.yahoo import (  # noqa: E402
     resolve_ticker,
 )
 from stockval.engine import Assumptions, derive_assumptions, run_valuation  # noqa: E402
-from stockval.valuation import comparables, sensitivity  # noqa: E402
+from stockval.valuation import ai_analyst, comparables, sensitivity  # noqa: E402
 
 st.set_page_config(page_title="Stock Valuation System", page_icon="📈", layout="wide")
 
@@ -203,11 +203,136 @@ st.markdown(
 # --------------------------------------------------------------------------
 # Tabs
 # --------------------------------------------------------------------------
-tab_val, tab_sens, tab_scen, tab_peers, tab_data = st.tabs(
-    ["Valuation", "Sensitivity", "Scenarios", "Comparables", "Fundamentals"]
+tab_ai, tab_val, tab_sens, tab_scen, tab_peers, tab_data = st.tabs(
+    ["🤖 AI Analyst", "Valuation", "Sensitivity", "Scenarios", "Comparables", "Fundamentals"]
 )
 
-with tab_val:
+with tab_ai:
+    st.subheader("📊 Institutional Equity Analysis")
+    st.caption("Powered by 20+ years of investment banking expertise")
+    
+    # Initialize AI analyst
+    analyst = ai_analyst.AIAnalyst(company)
+    
+    # Generate comprehensive thesis
+    thesis = analyst.generate_thesis(summary.blended_fair_value, mkt.price)
+    
+    # Executive summary with rating
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        st.markdown(f"### {thesis.thesis_title}")
+    with col2:
+        rating_color = {
+            "STRONG BUY": "🟢",
+            "BUY": "🟢",
+            "HOLD": "🟡",
+            "SELL": "🔴",
+            "STRONG SELL": "🔴",
+        }.get(thesis.investment_rating, "⚪")
+        st.metric("Rating", f"{rating_color} {thesis.investment_rating}")
+    with col3:
+        st.metric("Conviction", f"{thesis.conviction_level:.0%}")
+    
+    st.markdown(thesis.executive_summary)
+    
+    # Investment thesis sections
+    st.divider()
+    st.markdown("### Investment Thesis")
+    
+    bull_col, bear_col = st.columns(2)
+    with bull_col:
+        st.markdown("**Bull Case** 🟢")
+        st.markdown(thesis.bull_case)
+    
+    with bear_col:
+        st.markdown("**Bear Case** 🔴")
+        st.markdown(thesis.bear_case)
+    
+    # Catalysts and risks
+    st.divider()
+    st.markdown("### Catalysts & Risks")
+    
+    cat_col, risk_col = st.columns(2)
+    with cat_col:
+        st.markdown("**Key Catalysts**")
+        for catalyst in thesis.key_catalysts:
+            st.markdown(f"• {catalyst}")
+    
+    with risk_col:
+        st.markdown("**Key Risks**")
+        for risk in thesis.risks:
+            st.markdown(f"• {risk}")
+    
+    # Analysis sections
+    st.divider()
+    st.markdown("### Detailed Analysis")
+    
+    analysis_col1, analysis_col2 = st.columns(2)
+    
+    with analysis_col1:
+        st.markdown("**Valuation Assessment**")
+        st.info(thesis.valuation_commentary)
+        
+        st.markdown("**Growth Outlook**")
+        st.info(thesis.growth_outlook)
+    
+    with analysis_col2:
+        st.markdown("**Competitive Position**")
+        st.info(thesis.competitive_position)
+    
+    # Trend analysis
+    st.divider()
+    st.markdown("### Market & Trend Analysis")
+    
+    trend = analyst.identify_trend()
+    seasonality = analyst.detect_seasonality()
+    growth_data = analyst.analyze_growth_trajectory()
+    
+    trend_col1, trend_col2, trend_col3 = st.columns(3)
+    
+    with trend_col1:
+        st.markdown("**Trend Profile**")
+        st.metric("Type", trend.trend_type)
+        st.metric("Confidence", f"{trend.confidence:.0%}")
+        st.caption(trend.description)
+    
+    with trend_col2:
+        st.markdown("**Growth Analysis**")
+        if growth_data.get("status") != "insufficient_data":
+            st.metric("Historical CAGR", f"{growth_data.get('historical_cagr', 0):.1%}")
+            st.metric("Recent Growth", f"{growth_data.get('recent_growth_rate', 0):.1%}")
+            st.metric("Momentum", growth_data.get('momentum', '—'))
+            st.metric("Quality", growth_data.get('growth_quality', '—'))
+        else:
+            st.caption("Insufficient data for growth analysis")
+    
+    with trend_col3:
+        st.markdown("**Seasonality**")
+        if seasonality.is_seasonal:
+            st.metric("Seasonal", "Yes ✓")
+            st.metric("Strength", f"{seasonality.seasonality_strength:.0%}")
+            if seasonality.peak_quarters:
+                st.caption(f"Peak: Q{',Q'.join(map(str, seasonality.peak_quarters))}")
+            if seasonality.trough_quarters:
+                st.caption(f"Trough: Q{',Q'.join(map(str, seasonality.trough_quarters))}")
+        else:
+            st.metric("Seasonal", "No")
+            st.metric("Strength", "Minimal")
+    
+    st.markdown("**Seasonality Details**")
+    st.caption(seasonality.reasoning)
+    
+    # Trend drivers
+    st.markdown("**Trend Drivers**")
+    for driver in trend.key_drivers:
+        st.markdown(f"• {driver}")
+    
+    # Analyst notes
+    st.divider()
+    st.markdown("### Analyst Commentary")
+    st.markdown(thesis.analyst_notes)
+
+
     rows = []
     for r in summary.results:
         up = r.upside(mkt.price)
